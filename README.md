@@ -3,8 +3,9 @@
 - `ai_employee/`: FastAPI -> LangGraph -> Google Gemini backend.
 - `cognitive/`: Next.js frontend scaffold, to connect in a later step.
 
-The current step is a basic model connection: ask **What is the capital of France?**
-The CEO hierarchy, social agents, tools, memory, and other integrations remain for later.
+The active hierarchy is **CEO -> social media manager -> content writer ->
+platform preview tools**. It prepares drafts for Facebook, Instagram, X and
+LinkedIn. Social connectors and publishing are future work.
 
 ## Clone on your laptop
 
@@ -53,7 +54,7 @@ The backend uses the Gemini Developer API with this key. Your Google project
 must have access and available quota for the selected model. You can change
 `GEMINI_MODEL` to another text model available to your key.
 
-## Run and ask the first question
+## Run and request social post previews
 
 From `ai_employee`:
 
@@ -65,17 +66,34 @@ Keep the terminal open. Open <http://127.0.0.1:8000/docs>, expand **POST /chat**
 click **Try it out**, and execute:
 
 ```json
-{"query": "What is the capital of France?"}
-```
-
-Expected response shape (the model's wording may vary):
-
-```json
 {
-  "answer": "The capital of France is Paris.",
-  "model_id": "gemini-3.5-flash-lite"
+  "query": "Draft launch posts for our planning app for freelancers. Do not invent prices or dates.",
+  "brand": {
+    "name": "Focus Studio",
+    "description": "A planning app that helps freelancers organize their working day.",
+    "audience": "Freelancers",
+    "tone": "Friendly, practical and confident",
+    "language": "English"
+  },
+  "platforms": ["facebook", "instagram", "x", "linkedin"]
 }
 ```
+
+The response includes:
+
+- `answer`: readable previews containing the exact text returned by the platform tools.
+- `previews`: each platform's text, visual idea, character count, warnings and draft status.
+- `tool_calls`: the actual CEO, manager and content-writer tool calls and their completion status.
+- `mode: "preview"`, `published: false`, and `connector_status: "not_connected"` on every draft.
+
+`brand` and `platforms` are optional. The agents use platforms named in the query,
+or all four when none are named. An explicit `platforms` list is enforced by the
+preview tools. Each request is independent: provide the brand and any revision
+brief again. Durable chat memory and account connectors are not enabled.
+
+Ordinary questions still work with `{"query": "What is the capital of France?"}`.
+The CEO answers directly with empty previews and no delegation calls. Social
+campaigns use multiple Gemini model requests to delegate, write, and review.
 
 A successful response confirms FastAPI, LangGraph, and the live Gemini model
 are connected. <http://127.0.0.1:8000/health> checks the API only; it does not
@@ -89,7 +107,8 @@ Restart the server after changing the key or model in `.env`.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The normal tests mock the Gemini SDK and do not make model requests. The CEO
+The normal tests mock the Gemini SDK and exercise the full hierarchy and real
+preview tools without making model requests. The CEO
 smoke test calls the live model only when `RUN_LIVE_MODEL_TESTS=1` is explicitly
 set in your terminal and a valid key is configured.
 

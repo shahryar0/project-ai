@@ -39,7 +39,10 @@ def gemini(monkeypatch):
 
 def test_question_reaches_gemini_adapter(gemini):
     response = chat(ChatRequest(query="What is the capital of France?"))
-    assert response.model_dump() == {"answer": "Paris.", "model_id": config.GEMINI_MODEL}
+    assert response.answer == "Paris."
+    assert response.model_id == config.GEMINI_MODEL
+    assert response.previews == []
+    assert response.tool_calls == []
     gemini.assert_called_once()
     request = gemini.call_args.kwargs
     assert request["model"] == config.GEMINI_MODEL
@@ -130,3 +133,109 @@ def test_api_documents_routes_and_errors():
         assert responses[status_code]["content"]["application/json"]["schema"] == {
             "$ref": "#/components/schemas/ErrorResponse"
         }
+
+
+def sdk_reply(text=None, calls=None):
+    parts = [types.Part(text=text)] if text is not None else [
+        types.Part(function_call=types.FunctionCall(name=name, args=args))
+        for name, args in calls
+    ]
+    return types.GenerateContentResponse(candidates=[types.Candidate(
+        content=types.Content(role="model", parts=parts), finish_reason=types.FinishReason.STOP,
+    )])
+
+
+def social_script(platforms):
+    return [
+        sdk_reply(calls=[("social_media_manager", {"brief": "Prepare a product launch campaign."})]),
+        sdk_reply(calls=[("content_writer", {"brief": "Write the requested platform posts."})]),
+        sdk_reply(calls=[(f"preview_{platform}_post", {
+            "text": f"Draft for {platform}: meet our new planning app. #Planning",
+            "media_suggestion": "A product screenshot supplied by the owner.",
+        }) for platform in platforms]),
+        sdk_reply("Draft previews are ready."),
+        sdk_reply("Campaign drafts reviewed."),
+        sdk_reply("Ready for your review."),
+    ]
+
+
+def test_real_agent_hierarchy_calls_all_platform_tools(gemini):
+    from app.schemas import PLATFORMS
+    gemini.side_effect = social_script(PLATFORMS)
+    response = chat(ChatRequest(
+        query="Write social posts for our planning app launch.",
+        brand={"name": "Focus Studio", "audience": "Freelancers", "tone": "Friendly", "language": "English"},
+    ))
+    assert gemini.call_count == 6
+    assert [post.platform for post in response.previews] == list(PLATFORMS)
+    for post in response.previews:
+        assert post.text.startswith(f"Draft for {post.platform}")
+        assert post.character_count == len(post.text)
+        assert post.published is False
+        assert post.connector_status == "not_connected"
+    assert [(call.agent, call.tool, call.status) for call in response.tool_calls] == [
+        ("ceo", "social_media_manager", "completed"),
+        ("social_media_manager", "content_writer", "completed"),
+        *[("content_writer", f"preview_{platform}_post", "completed") for platform in PLATFORMS],
+    ]
+    for request in gemini.call_args_list[:3]:
+        text = request.kwargs["contents"][0].parts[0].text
+        assert "Focus Studio" in text
+        assert "Freelancers" in text
+    assert "Nothing was published" in response.answer
+
+
+def test_explicit_platforms_are_enforced_even_if_model_calls_extra_tool(gemini):
+    gemini.side_effect = social_script(["facebook", "x"])
+    response = chat(ChatRequest(query="Only draft for X.", platforms=["x"]))
+    assert [post.platform for post in response.previews] == ["x"]
+    rejected = next(call for call in response.tool_calls if call.tool == "preview_facebook_post")
+    assert rejected.status == "error"
+
+
+def test_no_previews_is_reported_honestly(gemini):
+    gemini.side_effect = social_script(["facebook"])
+    response = chat(ChatRequest(query="Only draft for X.", platforms=["x"]))
+    assert response.previews == []
+    assert "No platform previews were produced" in response.answer
+    assert "Nothing was published" in response.answer
+
+
+def test_nested_manager_quota_error_returns_429(gemini):
+    gemini.side_effect = [
+        sdk_reply(calls=[("social_media_manager", {"brief": "Draft a launch campaign."})]),
+        errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota reached"}}),
+    ]
+    with pytest.raises(HTTPException) as error:
+        chat(ChatRequest(query="Write launch posts."))
+    assert error.value.status_code == 429
+    assert gemini.call_count == 2
+
+
+def test_brand_and_previews_do_not_leak_to_next_request(gemini):
+    gemini.side_effect = social_script(["x"]) + [sdk_reply("Paris.")]
+    first = chat(ChatRequest(query="Draft for X.", brand={"name": "Private Test Brand"}, platforms=["x"]))
+    assert len(first.previews) == 1
+    second = chat(ChatRequest(query="What is the capital of France?"))
+    assert second.previews == []
+    assert second.tool_calls == []
+    assert second.answer == "Paris."
+    assert "Private Test Brand" not in gemini.call_args.kwargs["contents"][0].parts[0].text
+
+
+def test_preview_flags_and_editorial_warning():
+    from app.tools.preview import render_preview
+    from app.schemas import PostPreview
+    _, artifact = render_preview("x", "a" * 261, "Visual idea", None)
+    preview = PostPreview.model_validate(artifact["previews"][0])
+    assert preview.character_count == 261
+    assert preview.warnings
+    assert preview.published is False
+    with pytest.raises(ValidationError):
+        PostPreview.model_validate({**preview.model_dump(), "published": True})
+
+
+@pytest.mark.parametrize("platforms", [[], ["tiktok"], ["facebook"] * 5])
+def test_invalid_platform_preferences(platforms):
+    with pytest.raises(ValidationError):
+        ChatRequest(query="Draft a post", platforms=platforms)

@@ -1,8 +1,21 @@
 # AI Employee backend with Gemini
 
 The active path is **FastAPI -> LangGraph -> Gemini Developer API**.
-The graph is `START -> model -> END`, with a simple assistant prompt and one
-independent question per request. CEO and social agents remain for later.
+The active graph is a stateless hierarchy with tool-based delegation:
+
+```text
+CEO (owner-facing assistant)
+  -> social_media_manager tool / manager agent
+     -> content_writer tool / content agent
+        -> preview_facebook_post
+        -> preview_instagram_post
+        -> preview_x_post
+        -> preview_linkedin_post
+```
+
+Each agent has its own system prompt and role personality in `app/prompts/`.
+Only the content writer has platform tools; every platform tool renders a local
+draft. There are no social API calls, account connections, publishing or scheduling.
 
 ## Setup on Windows
 
@@ -41,7 +54,17 @@ The original `txtbase.txt` is kept only as a reference to the earlier Bedrock ex
 Open <http://127.0.0.1:8000/docs>, expand **POST /chat -> Try it out**, and send:
 
 ```json
-{"query": "What is the capital of France?"}
+{
+  "query": "Draft launch posts for our planning app. Do not invent prices or dates.",
+  "brand": {
+    "name": "Focus Studio",
+    "description": "A planning app for organizing a freelancer's working day.",
+    "audience": "Freelancers",
+    "tone": "Warm, practical and confident",
+    "language": "English"
+  },
+  "platforms": ["facebook", "instagram", "x", "linkedin"]
+}
 ```
 
 Or use a second terminal while the server is running:
@@ -50,8 +73,34 @@ Or use a second terminal while the server is running:
 Invoke-RestMethod -Uri http://127.0.0.1:8000/chat -Method Post -ContentType 'application/json' -Body '{"query":"What is the capital of France?"}'
 ```
 
-A successful response includes an `answer` about Paris and
-`model_id: gemini-3.5-flash-lite`. The text comes from Gemini.
+A successful response includes `answer`, `model_id`, `mode`, `previews` and
+`tool_calls`. Every preview includes its exact `text`, a written
+`media_suggestion`, `character_count`, editorial `warnings`, `status: "draft"`,
+`published: false`, and `connector_status: "not_connected"`. These flags are
+set by code, and the displayed text comes from real preview tool results.
+
+The call trace contains tool names, agent roles and completion status; it does
+not expose model reasoning or credentials. The normal path is CEO calling the
+manager, manager calling the writer once for the batch, and the writer calling
+one preview tool per requested platform. Agents may make revision calls.
+
+`brand` and `platforms` are optional. An explicit platform list is enforced even
+if the model attempts an extra platform. Without a list, agents follow platforms
+mentioned in the brief, defaulting to all four when none are mentioned. Twitter
+is treated as X. Brand preferences reach all three agents through per-request
+context. Supply the preferences and full revision brief on each request; chat
+memory is not enabled and requests do not share drafts.
+
+Facebook uses a conversational/community voice, Instagram a visual caption,
+X a concise message, and LinkedIn a professional/business voice. Internal
+editorial budgets are 1200, 1800, 260 and 2000 characters respectively; these
+are draft-writing targets, not platform API validation. Character counts use
+Python string length. Actual media generation, URL handling and platform-specific
+validation will belong to future connectors.
+
+For the original connection check, send only
+`{"query": "What is the capital of France?"}`. The CEO answers directly; preview
+and call lists are empty. The PowerShell example above runs this simple check.
 `GET /health` checks only the API and does not validate your key or model access.
 The model is created on the first `/chat` request. Restart the server after
 changing `.env`. Press `Ctrl+C` to stop the server.
@@ -72,8 +121,10 @@ changing `.env`. Press `Ctrl+C` to stop the server.
 - HTTP 503 connection/service error: check your connection and the Gemini service status.
 
 `/` and `/favicon.ico` are not defined, so 404 responses for those URLs are expected.
-The shared model factory caps output at 1024 tokens and uses a 30-second timeout
-with one retry. It leaves generation parameters such as temperature at the model default.
+The CEO caps output at 1024 tokens, the manager at 1536, and the content writer
+at 4096 for a batch of four posts. Each Gemini call uses a 30-second timeout and
+one retry. Social campaigns require multiple calls. Each agent has a graph step
+limit to bound repeated tool execution. Temperature uses the model default.
 
 ## Local checks
 
@@ -81,11 +132,13 @@ with one retry. It leaves generation parameters such as temperature at the model
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Normal tests mock the Gemini SDK, exercising LangGraph and the real LangChain
-Gemini adapter without sending requests. The future CEO smoke test runs against
+Normal tests mock the Gemini SDK, exercising nested agent/tool calls, the real
+Gemini adapter, brand context propagation, preview-only guarantees, platform
+selection, and isolation between requests. The optional CEO smoke test runs against
 Gemini only when `RUN_LIVE_MODEL_TESTS=1` is explicitly set and a key is configured.
 
 References: [Gemini model](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash-lite),
 [API key setup](https://ai.google.dev/gemini-api/docs/api-key),
 [LangChain Gemini integration](https://docs.langchain.com/oss/python/integrations/chat/google_generative_ai),
+[agent delegation pattern](https://docs.langchain.com/oss/python/langchain/multi-agent/subagents),
 [API troubleshooting](https://ai.google.dev/gemini-api/docs/troubleshooting).
