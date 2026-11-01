@@ -2,7 +2,8 @@ import os
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    not os.getenv("BEDROCK_MODEL_ID"), reason="BEDROCK_MODEL_ID not set"
+    os.getenv("RUN_LIVE_MODEL_TESTS") != "1",
+    reason="Set RUN_LIVE_MODEL_TESTS=1 to enable the live Gemini CEO test",
 )
 
 

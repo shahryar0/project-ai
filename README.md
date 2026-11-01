@@ -1,117 +1,107 @@
 # project-ai
 
-This repository contains both parts of the project:
+- `ai_employee/`: FastAPI -> LangGraph -> Google Gemini backend.
+- `cognitive/`: Next.js frontend scaffold, to connect in a later step.
 
-- `ai_employee/`: FastAPI backend with a basic LangGraph -> Amazon Bedrock model connection.
-- `cognitive/`: Next.js frontend scaffold. It is not connected to the backend yet.
-
-The current working step is asking the backend: **What is the capital of France?**
+The current step is a basic model connection: ask **What is the capital of France?**
 The CEO hierarchy, social agents, tools, memory, and other integrations remain for later.
 
-## First push to GitHub
+## Clone on your laptop
 
-Extract the prepared `B-I-FYP-source.zip` and open PowerShell inside its
-`B-I-FYP` folder. The ZIP contains both source folders without nested Git
-metadata, installed dependencies, or local credentials.
-
-Run these commands once from that extracted folder:
-
-```powershell
-git init
-git add .
-git commit -m "Set up frontend and FastAPI LangGraph backend"
-git branch -M main
-git remote add origin https://github.com/shahryar0/project-ai.git
-git push -u origin main
-```
-
-The root `.gitignore` excludes virtual environments, `node_modules`, build
-output, caches, local `.env` files, and credentials. Dependency manifests,
-`cognitive/package-lock.json`, and the backend `.env.example` are included.
-
-## Clone on your home laptop
-
-Install Git and Python 3.10 or newer. Node.js 20.9 or newer is needed only if
-you also want to run the frontend.
+Install Git and Python 3.11 or newer. Node.js 20.9 or newer is needed only for
+the optional frontend.
 
 ```powershell
 git clone https://github.com/shahryar0/project-ai.git
 cd project-ai
 ```
 
-## Install and run the backend
+For an existing clone, run `git pull` instead.
 
-From the cloned `project-ai` folder, run these first-time setup commands:
+## Install the backend dependencies
+
+From the project root:
 
 ```powershell
 cd ai_employee
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
 ```
 
-The Python dependency versions in `requirements.txt` match the tested setup.
-Create the virtual environment on each laptop; do not copy one from another PC.
+Create a virtual environment separately on each laptop. Run the backend with
+its `.venv` Python so it uses the dependencies installed for this project.
 
-Your local `.env` defaults to:
+## Configure Gemini
 
-```dotenv
-AWS_REGION=us-east-1
-BEDROCK_MODEL_ID=amazon.nova-micro-v1:0
-```
-
-The backend uses the AWS credentials configured on that laptop. Check your
-default AWS identity from the same terminal:
+Create an API key in [Google AI Studio](https://aistudio.google.com/apikey).
+Create `ai_employee/.env` if it does not exist:
 
 ```powershell
-aws sts get-caller-identity
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
 ```
 
-If you use SSO and the session has expired, run `aws sso login`. For a named
-profile, set `AWS_PROFILE=your-profile-name` in `.env` and add
-`--profile your-profile-name` to the AWS CLI commands. AWS settings are local
-to each computer and are not included in the repository. The AWS identity
-must have permission to invoke the selected Bedrock model.
+If you already have `.env`, add or update these two settings:
 
-Start the backend while inside `ai_employee`:
+```dotenv
+GOOGLE_API_KEY=your_actual_google_ai_studio_key
+GEMINI_MODEL=gemini-3.5-flash-lite
+```
+
+Save the file. The API key stays in your local `.env`, which Git ignores.
+The backend uses the Gemini Developer API with this key. Your Google project
+must have access and available quota for the selected model. You can change
+`GEMINI_MODEL` to another text model available to your key.
+
+## Run and ask the first question
+
+From `ai_employee`:
 
 ```powershell
 .\.venv\Scripts\python.exe run.py
 ```
 
-Keep this terminal open. On later runs, this is the only Python command needed.
-
-## Check the live model connection
-
-Open <http://127.0.0.1:8000/docs> in your browser. Expand **POST /chat**, click
-**Try it out**, and execute:
+Keep the terminal open. Open <http://127.0.0.1:8000/docs>, expand **POST /chat**,
+click **Try it out**, and execute:
 
 ```json
 {"query": "What is the capital of France?"}
 ```
 
-A successful HTTP 200 response should look like this (the exact wording can vary):
+Expected response shape (the model's wording may vary):
 
 ```json
 {
   "answer": "The capital of France is Paris.",
-  "model_id": "amazon.nova-micro-v1:0"
+  "model_id": "gemini-3.5-flash-lite"
 }
 ```
 
-This confirms the API, LangGraph, and live Bedrock model are connected.
-<http://127.0.0.1:8000/health> checks only whether the API is running.
-Press `Ctrl+C` in the server terminal to stop it.
+A successful response confirms FastAPI, LangGraph, and the live Gemini model
+are connected. <http://127.0.0.1:8000/health> checks the API only; it does not
+contact Gemini or verify the key. Press `Ctrl+C` to stop the server.
 
-To check the Python logic with stubbed Bedrock responses, run from `ai_employee`:
+Restart the server after changing the key or model in `.env`.
+
+## Checks and errors
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Install and run the frontend (optional)
+The normal tests mock the Gemini SDK and do not make model requests. The CEO
+smoke test calls the live model only when `RUN_LIVE_MODEL_TESTS=1` is explicitly
+set in your terminal and a valid key is configured.
 
-Open another terminal in the cloned `project-ai` root:
+- HTTP 429: Gemini quota or rate limit reached; check your AI Studio project limits.
+- HTTP 503: missing key, access denied, connection problem, or temporary service failure.
+- HTTP 502: invalid key/request settings, unavailable model, or no text returned by the model.
+
+See [the backend README](ai_employee/README.md) for more details.
+
+## Optional frontend
+
+Open another terminal in the project root:
 
 ```powershell
 cd cognitive
@@ -119,7 +109,9 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:3000>. This currently displays the starter frontend;
-use the backend API docs to test the model connection.
+Open <http://localhost:3000>. The frontend is currently a starter page; use
+`/docs` on port 8000 to test the model.
 
-For more backend details, see [ai_employee/README.md](ai_employee/README.md).
+The root `.gitignore` excludes `.env`, virtual environments, `node_modules`,
+caches, generated build files, and local credentials. The dependency files and
+`.env.example` are included so each laptop can install its own environment.

@@ -1,12 +1,17 @@
-"""Minimal FastAPI service for testing the LangGraph -> Bedrock connection."""
+"""Minimal FastAPI service for testing the LangGraph -> Gemini connection."""
 
-from botocore.exceptions import (
-    BotoCoreError,
-    ClientError,
-    NoCredentialsError,
-    PartialCredentialsError,
-)
+import httpx
 from fastapi import FastAPI, HTTPException
+from google.genai.errors import APIError
+from langchain_core.exceptions import (
+    ModelAPIError,
+    ModelAuthenticationError,
+    ModelInvalidRequestError,
+    ModelNotFoundError,
+    ModelPermissionDeniedError,
+    ModelRateLimitError,
+)
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
@@ -14,7 +19,7 @@ from app.graph import get_graph
 
 app = FastAPI(
     title="AI Employee - Model Connection",
-    description="A basic question goes through LangGraph to Amazon Bedrock.",
+    description="A basic question goes through LangGraph to Google Gemini.",
 )
 
 
@@ -35,44 +40,56 @@ class ErrorResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Checks the API only; this does not call or verify the AWS model."""
-    return {"status": "ok", "model_id": config.BEDROCK_MODEL_ID}
+    """Checks the API only; this does not verify the Gemini key or model."""
+    return {"status": "ok", "model_id": config.GEMINI_MODEL}
 
 
 @app.post(
     "/chat",
     response_model=ChatResponse,
     responses={
-        429: {"model": ErrorResponse, "description": "Bedrock request or token quota reached."},
-        502: {"model": ErrorResponse, "description": "Bedrock rejected the request or returned no text."},
-        503: {"model": ErrorResponse, "description": "AWS credentials, connection, or configuration unavailable."},
+        429: {"model": ErrorResponse, "description": "Gemini quota or rate limit reached."},
+        502: {"model": ErrorResponse, "description": "Gemini rejected the request or returned no text."},
+        503: {"model": ErrorResponse, "description": "Gemini key, connection, or service unavailable."},
     },
 )
 def chat(body: ChatRequest) -> ChatResponse:
-    """Use a sync route because the Bedrock SDK call is blocking."""
+    """Use a sync route because the Gemini SDK call is blocking."""
     try:
         result = get_graph().invoke({"messages": [("user", body.query)]})
-    except (NoCredentialsError, PartialCredentialsError) as exc:
+    except config.ConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ModelRateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Gemini quota or rate limit reached. Check your Google AI Studio project limits.",
+        ) from exc
+    except (ModelAuthenticationError, ModelPermissionDeniedError) as exc:
         raise HTTPException(
             status_code=503,
-            detail="AWS credentials are missing. Sign in with the AWS CLI or configure your AWS profile.",
+            detail="Gemini rejected access. Check GOOGLE_API_KEY and its Google AI Studio project permissions.",
         ) from exc
-    except ClientError as exc:
-        error = exc.response.get("Error", {})
-        code = error.get("Code", "Unknown")
+    except ModelNotFoundError as exc:
         raise HTTPException(
-            status_code=429 if code == "ThrottlingException" else 502,
-            detail=f"Bedrock request failed ({code}): {error.get('Message', '')}",
+            status_code=502,
+            detail="Gemini model not found. Check GEMINI_MODEL and the models available to your API key.",
         ) from exc
-    except BotoCoreError as exc:
-        raise HTTPException(status_code=503, detail=f"AWS connection failed: {exc}") from exc
+    except ModelAPIError as exc:
+        raise HTTPException(status_code=503, detail="Gemini service is unavailable. Try again later.") from exc
+    except (ModelInvalidRequestError, ChatGoogleGenerativeAIError, APIError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Gemini rejected the request. Check GOOGLE_API_KEY, GEMINI_MODEL and the request settings.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail="Could not connect to Gemini. Check your internet connection.") from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=503,
-            detail="Could not initialize Bedrock. Check your AWS login, AWS_REGION and BEDROCK_MODEL_ID.",
+            detail="Could not initialize Gemini. Check GOOGLE_API_KEY and GEMINI_MODEL in ai_employee/.env.",
         ) from exc
 
     answer = result["messages"][-1].text.strip()
     if not answer:
-        raise HTTPException(status_code=502, detail="Bedrock returned an empty text response.")
-    return ChatResponse(answer=answer, model_id=config.BEDROCK_MODEL_ID)
+        raise HTTPException(status_code=502, detail="Gemini returned no text. Check whether generation was blocked or reached its output limit.")
+    return ChatResponse(answer=answer, model_id=config.GEMINI_MODEL)
