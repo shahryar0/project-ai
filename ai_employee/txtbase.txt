@@ -1,0 +1,50 @@
+# Flask example — connects your frontend to Bedrock
+from flask import Flask, request, jsonify
+import boto3
+
+app = Flask(__name__)
+client = boto3.client("bedrock-runtime", region_name="us-east-1")
+
+@app.route("/generate-post", methods=["POST"])
+def generate_post():
+    user_query = request.json.get("query")
+    
+    response = client.converse(
+        modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        messages=[{"role": "user", "content": [{"text": user_query}]}],
+        system=[{"text": "You are an AI social media employee. Generate engaging posts based on user requests."}]
+    )
+    
+    post_content = response["output"]["message"]["content"][0]["text"]
+    return jsonify({"post": post_content})
+
+if __name__ == "__main__":
+    app.run(port=5000)  # Runs on localhost:5000 will be writen in fast api 
+
+  import boto3
+import json
+
+# This uses your credentials from 'aws configure'
+client = boto3.client("bedrock-runtime", region_name="us-east-1")
+
+def generate_social_post(user_query):
+    response = client.converse(
+        # Start cheap with Nova Micro, upgrade later
+        modelId="amazon.nova-micro-v1:0",
+        system=[{
+            "text": """You are an AI social media employee. 
+            When given a topic or request, write an engaging, 
+            professional social media post. Keep it concise and impactful."""
+        }],
+        messages=[
+            {
+                "role": "user",
+                "content": [{"text": user_query}]
+            }
+        ]
+    )
+    return response["output"]["message"]["content"][0]["text"]
+
+# Test it
+post = generate_social_post("Write a LinkedIn post about our new AI product launch")
+print(post)

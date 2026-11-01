@@ -1,0 +1,55 @@
+# Local environment settings; commit templates only.
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+
+# AWS configuration and private keys.
+.aws/
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python environments, caches, and packages.
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+*.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
+# JavaScript dependencies and generated output.
+node_modules/
+.next/
+.turbo/
+.vercel/
+out/
+build/
+dist/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs, local editor settings, and operating-system files.
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local repository backups.
+.local-backups/
+.git-backup/
