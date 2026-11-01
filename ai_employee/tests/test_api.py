@@ -58,7 +58,7 @@ def test_chat_passes_question_to_bedrock(bedrock):
             "modelId": config.BEDROCK_MODEL_ID,
             "messages": [{"role": "user", "content": [{"text": "What is the capital of France?"}]}],
             "system": ANY,
-            "inferenceConfig": {"maxTokens": 2000, "temperature": 0.3},
+            "inferenceConfig": {"maxTokens": 128, "temperature": 0.3},
         },
     )
     response = chat(ChatRequest(query="What is the capital of France?"))
@@ -90,6 +90,23 @@ def test_bedrock_access_error_is_actionable(bedrock):
     assert "AccessDeniedException" in error.value.detail
 
 
+@pytest.mark.parametrize("message", [
+    "Too many tokens per day, please wait before trying again.",
+    "Too many requests, please wait before trying again.",
+])
+def test_bedrock_throttling_returns_429(bedrock, message):
+    bedrock.add_client_error(
+        "converse",
+        service_error_code="ThrottlingException",
+        service_message=message,
+        http_status_code=429,
+    )
+    with pytest.raises(HTTPException) as error:
+        chat(ChatRequest(query="What is the capital of France?"))
+    assert error.value.status_code == 429
+    assert message in error.value.detail
+
+
 def test_missing_credentials_returns_setup_message(bedrock, monkeypatch):
     def no_credentials(**kwargs):
         raise NoCredentialsError()
@@ -105,3 +122,12 @@ def test_api_exposes_chat_and_health():
     paths = app.openapi()["paths"]
     assert "post" in paths["/chat"]
     assert "get" in paths["/health"]
+
+
+def test_api_documents_bedrock_errors():
+    schema = app.openapi()
+    responses = schema["paths"]["/chat"]["post"]["responses"]
+    for status_code in ("429", "502", "503"):
+        assert responses[status_code]["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/ErrorResponse"
+        }

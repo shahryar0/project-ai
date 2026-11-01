@@ -29,13 +29,25 @@ class ChatResponse(BaseModel):
     model_id: str
 
 
+class ErrorResponse(BaseModel):
+    detail: str
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     """Checks the API only; this does not call or verify the AWS model."""
     return {"status": "ok", "model_id": config.BEDROCK_MODEL_ID}
 
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post(
+    "/chat",
+    response_model=ChatResponse,
+    responses={
+        429: {"model": ErrorResponse, "description": "Bedrock request or token quota reached."},
+        502: {"model": ErrorResponse, "description": "Bedrock rejected the request or returned no text."},
+        503: {"model": ErrorResponse, "description": "AWS credentials, connection, or configuration unavailable."},
+    },
+)
 def chat(body: ChatRequest) -> ChatResponse:
     """Use a sync route because the Bedrock SDK call is blocking."""
     try:
@@ -47,9 +59,10 @@ def chat(body: ChatRequest) -> ChatResponse:
         ) from exc
     except ClientError as exc:
         error = exc.response.get("Error", {})
+        code = error.get("Code", "Unknown")
         raise HTTPException(
-            status_code=502,
-            detail=f"Bedrock request failed ({error.get('Code', 'Unknown')}): {error.get('Message', '')}",
+            status_code=429 if code == "ThrottlingException" else 502,
+            detail=f"Bedrock request failed ({code}): {error.get('Message', '')}",
         ) from exc
     except BotoCoreError as exc:
         raise HTTPException(status_code=503, detail=f"AWS connection failed: {exc}") from exc
