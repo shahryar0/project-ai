@@ -1,4 +1,4 @@
-# B-I-FYP
+# project-ai
 
 This repository contains both parts of the project:
 
@@ -21,7 +21,7 @@ git init
 git add .
 git commit -m "Set up frontend and FastAPI LangGraph backend"
 git branch -M main
-git remote add origin https://github.com/shahryar0/B-I-FYP.git
+git remote add origin https://github.com/shahryar0/project-ai.git
 git push -u origin main
 ```
 
@@ -35,13 +35,13 @@ Install Git and Python 3.10 or newer. Node.js 20.9 or newer is needed only if
 you also want to run the frontend.
 
 ```powershell
-git clone https://github.com/shahryar0/B-I-FYP.git
-cd B-I-FYP
+git clone https://github.com/shahryar0/project-ai.git
+cd project-ai
 ```
 
 ## Install and run the backend
 
-From the cloned `B-I-FYP` folder, run these first-time setup commands:
+From the cloned `project-ai` folder, run these first-time setup commands:
 
 ```powershell
 cd ai_employee
@@ -111,7 +111,7 @@ To check the Python logic with stubbed Bedrock responses, run from `ai_employee`
 
 ## Install and run the frontend (optional)
 
-Open another terminal in the cloned `B-I-FYP` root:
+Open another terminal in the cloned `project-ai` root:
 
 ```powershell
 cd cognitive
