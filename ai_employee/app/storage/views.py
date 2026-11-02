@@ -19,10 +19,12 @@ class DraftView(BaseModel):
     campaign_id: str
     platform: Platform
     current_version: int
-    state: Literal["draft"]
+    revision_rounds: int = 0
+    state: Literal["draft", "pending_review", "changes_requested", "approved", "rejected"]
     created_by_agent: str
     created_at: str
     versions: list[DraftVersionView]
+    approval_requests: list[dict] = []
     current: PostPreview
 
 

@@ -10,13 +10,14 @@ class WorkflowContext:
     platforms: tuple[Platform, ...] | None = None
     brief: CampaignBrief | None = None
     campaign_id: str | None = None
+    revision_draft_id: str | None = None
     # Opaque per-run infrastructure, injected by code and hidden from tool schemas.
     repository: Any = field(default=None, repr=False, compare=False)
 
 
 def brief_with_context(brief: str, context: WorkflowContext | None) -> str:
     if context and context.brief:
-        return f"Campaign brief (authoritative JSON):\n{context.brief.model_dump_json()}\n\nDelegation notes (do not change the brief):\n{brief}"
+        return f"Campaign brief (authoritative JSON):\n{context.brief.model_dump_json()}\nSaved campaign ID (code-owned): {context.campaign_id}\n\nDelegation notes (do not change the brief):\n{brief}"
     if context is None or (context.brand is None and context.platforms is None):
         return brief
     preferences = {

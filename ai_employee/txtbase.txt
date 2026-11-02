@@ -1,50 +1,141 @@
-# Flask example — connects your frontend to Bedrock
-from flask import Flask, request, jsonify
+The Problem with LangGraph + Bedrock Throttling
+LangGraph calls the model very rapidly in its agent loop (think → act → observe → think again), which hits your quota limit fast. Here is the fix.
+
+Direct Model Endpoint URL for Bedrock (What You Asked)
+Yes — Bedrock has a direct HTTPS endpoint you can call without boto3:
+
+https://bedrock-runtime.us-east-1.amazonaws.com/model/{modelId}/converse
+
+For Nova Micro specifically:
+
+https://bedrock-runtime.us-east-1.amazonaws.com/model/amazon.nova-micro-v1:0/converse
+
+How to Use It in LangGraph with Your Short-term API Key
+Since you are on the Short-term API Keys page right now:
+
+Step 1 — Generate Your Short-term Key
+Click "Generate" on the page you are on now
+Copy the token — it lasts up to 12 hours
+Step 2 — Set it as environment variable
+# Mac/Linux
+export AWS_BEARER_TOKEN_BEDROCK="your-short-term-token-here"
+
+# Windows
+set AWS_BEARER_TOKEN_BEDROCK=your-short-term-token-here
+
+Run in CloudShell
+Step 3 — LangGraph with Bedrock (Anti-Throttle Setup)
 import boto3
+import time
+from botocore.config import Config
+from langchain_aws import ChatBedrock
+from langgraph.graph import StateGraph, END
+from typing import TypedDict, Annotated
+import operator
 
-app = Flask(__name__)
-client = boto3.client("bedrock-runtime", region_name="us-east-1")
+# ✅ KEY FIX — adaptive retry handles throttling automatically
+bedrock_config = Config(
+    retries={
+        "max_attempts": 10,
+        "mode": "adaptive"   # waits and retries smartly
+    },
+    read_timeout=120,        # wait longer for responses
+    connect_timeout=10
+)
 
-@app.route("/generate-post", methods=["POST"])
-def generate_post():
-    user_query = request.json.get("query")
+# ✅ Connect using IAM credentials (from aws configure)
+bedrock_client = boto3.client(
+    "bedrock-runtime",
+    region_name="us-east-1",
+    config=bedrock_config
+)
+
+# ✅ LangChain Bedrock model for LangGraph
+llm = ChatBedrock(
+    client=bedrock_client,
+    model_id="amazon.nova-micro-v1:0",   # cheapest
+    model_kwargs={
+        "temperature": 0.7,
+        "max_tokens": 1000
+    }
+)
+
+# ✅ Your AI Employee Agent State
+class AgentState(TypedDict):
+    messages: Annotated[list, operator.add]
+    user_query: str
+    generated_post: str
+    platform: str
+
+# ✅ Node 1 — Understand the user query
+def understand_query(state: AgentState):
+    time.sleep(0.5)  # small delay prevents throttling
+    response = llm.invoke([
+        {"role": "system", "content": "You are an AI social media employee. Understand what the user wants."},
+        {"role": "user", "content": state["user_query"]}
+    ])
+    return {"messages": [response.content]}
+
+# ✅ Node 2 — Generate the social media post
+def generate_post(state: AgentState):
+    time.sleep(0.5)  # small delay prevents throttling
+    prompt = f"""
+    Platform: {state['platform']}
+    User Request: {state['user_query']}
     
-    response = client.converse(
-        modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
-        messages=[{"role": "user", "content": [{"text": user_query}]}],
-        system=[{"text": "You are an AI social media employee. Generate engaging posts based on user requests."}]
-    )
-    
-    post_content = response["output"]["message"]["content"][0]["text"]
-    return jsonify({"post": post_content})
+    Write an engaging {state['platform']} post. Add hashtags. Keep it professional.
+    """
+    response = llm.invoke([
+        {"role": "system", "content": "You are an expert social media content writer."},
+        {"role": "user", "content": prompt}
+    ])
+    return {"generated_post": response.content}
 
-if __name__ == "__main__":
-    app.run(port=5000)  # Runs on localhost:5000 will be writen in fast api 
+# ✅ Build the LangGraph
+workflow = StateGraph(AgentState)
+workflow.add_node("understand", understand_query)
+workflow.add_node("generate", generate_post)
+workflow.set_entry_point("understand")
+workflow.add_edge("understand", "generate")
+workflow.add_edge("generate", END)
 
-  import boto3
-import json
+agent = workflow.compile()
 
-# This uses your credentials from 'aws configure'
-client = boto3.client("bedrock-runtime", region_name="us-east-1")
+# ✅ Run it
+result = agent.invoke({
+    "user_query": "Write a post about our new AI product launch",
+    "platform": "LinkedIn",
+    "messages": [],
+    "generated_post": ""
+})
 
-def generate_social_post(user_query):
-    response = client.converse(
-        # Start cheap with Nova Micro, upgrade later
-        modelId="amazon.nova-micro-v1:0",
-        system=[{
-            "text": """You are an AI social media employee. 
-            When given a topic or request, write an engaging, 
-            professional social media post. Keep it concise and impactful."""
-        }],
-        messages=[
-            {
-                "role": "user",
-                "content": [{"text": user_query}]
-            }
-        ]
-    )
-    return response["output"]["message"]["content"][0]["text"]
+print(result["generated_post"])
 
-# Test it
-post = generate_social_post("Write a LinkedIn post about our new AI product launch")
-print(post)
+If Still Throttling — Use OpenAI-Compatible Bedrock URL
+Since you are on the mantle endpoint page, Bedrock also supports the OpenAI-compatible API which works directly with LangGraph's OpenAI integration:
+
+from langchain_openai import ChatOpenAI
+import os
+
+# Use your Short-term API key from the page you are on
+os.environ["OPENAI_API_KEY"] = os.environ["AWS_BEARER_TOKEN_BEDROCK"]
+
+# Direct Bedrock OpenAI-compatible endpoint
+llm = ChatOpenAI(
+    model="amazon.nova-micro-v1:0",
+    base_url="https://bedrock-runtime.us-east-1.amazonaws.com/v1",
+    api_key=os.environ["AWS_BEARER_TOKEN_BEDROCK"],
+    max_retries=5,
+    timeout=60
+)
+
+# Now use this llm in your LangGraph — same code as above
+
+Summary — What to Do Right Now
+Step	Action
+1	Generate Short-term API key on your current page
+2	Set AWS_BEARER_TOKEN_BEDROCK env variable
+3	Add time.sleep(0.5) between LangGraph nodes
+4	Use mode="adaptive" in boto3 Config
+5	Use amazon.nova-micro-v1:0 (highest free quota)
+The time.sleep(0.5) between nodes is the simplest fix for LangGraph throttling — it slows down the agent loop just enough to stay under your quota limit.

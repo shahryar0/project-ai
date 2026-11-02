@@ -49,8 +49,8 @@ class PostPreview(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     qa_issues: list[QAIssue] = Field(default_factory=list)
     hashtag_count: int = 0
-    state: Literal["draft"] = "draft"
-    status: Literal["draft"] = "draft"
+    state: Literal["draft", "pending_review", "changes_requested", "approved", "rejected"] = "draft"
+    status: Literal["draft", "pending_review", "changes_requested", "approved", "rejected"] = "draft"
     connector_status: Literal["not_connected"] = "not_connected"
     published: Literal[False] = False
 

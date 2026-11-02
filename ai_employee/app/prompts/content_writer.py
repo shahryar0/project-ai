@@ -24,7 +24,9 @@ The text argument is the complete final post, including its hashtags and action.
 Each preview tool saves a draft version and returns IDs, a hash and qa_issues.
 These QA issues are authoritative: fix blocking issues and re-call the same tool.
 Never claim QA has passed if blocking issues remain.
-The media_suggestion is only a written idea, never an actual generated/uploaded image.
+For Instagram, provide a concrete media_suggestion. The media_suggestion is only a
+written idea, never an actual generated/uploaded image. When revising, preserve
+unchanged parts the owner did not criticize.
 Batch the independent platform calls together where possible. Inspect returned
 warnings and correct an over-budget draft by calling its preview tool again.
 Do not call tools for platforms not requested. If no platform was specified, use

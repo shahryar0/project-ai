@@ -1,6 +1,6 @@
 # AI Employee: AWS first, Gemini fallback
 
-**V2 Phase 1 is now implemented:** saved draft versions, typed briefs, code-owned platform selection and QA. See the [Phase 1 report](PHASE1_REPORT.md) for the current contract and how to test persistence. Later phases are not active.
+**V2 Phase 2 is implemented:** saved drafts now enter human review, with exact-version approvals, human edits, change requests, bounded agent revisions and an audit trail. See [PHASE2_REPORT.md](PHASE2_REPORT.md) for the workflow and local setup.
 
 FastAPI invokes a LangGraph hierarchy with separate system prompts and personalities:
 
@@ -12,10 +12,14 @@ CEO
         -> preview_instagram_post
         -> preview_x_post
         -> preview_linkedin_post
+     -> brand_guardian tool / read-only review agent
+CEO -> get_campaign_status (read-only saved state)
 ```
 
 All platform tools are local renderers. There is no publishing, scheduling, account
 connection, browsing or image generation. A visual suggestion is only a written idea.
+Only the configured human bearer tokens can edit or decide draft approvals. Agents
+cannot approve, schedule or publish.
 
 ## Setup and run on Windows
 
@@ -37,7 +41,14 @@ BEDROCK_MODEL_ID=amazon.nova-micro-v1:0
 AWS_BEARER_TOKEN_BEDROCK=
 GOOGLE_API_KEY=your_actual_google_ai_studio_key
 GEMINI_MODEL=gemini-3.5-flash-lite
+AI_EMPLOYEE_OWNER_TOKEN=choose-a-long-random-local-secret
+AI_EMPLOYEE_APPROVER_TOKEN=choose-another-long-random-local-secret
+AI_EMPLOYEE_TENANT_ID=local
 ```
+
+Keep the two review tokens only in ignored `ai_employee/.env` or your terminal
+environment. The configured token determines its role; an `agent` or `system`
+identity cannot pass the human approval routes. The local default tenant is `local`.
 
 The empty AWS bearer-token field uses your existing AWS CLI credentials. Add
 `AWS_PROFILE=your-profile-name` if needed. In CLI credential mode, check the identity
@@ -78,7 +89,7 @@ The CEO answers ordinary questions directly with empty preview and call lists.
 
 - `answer`: exact platform previews rendered for the owner.
 - `previews`: platform, text, written media suggestion, character count, warnings,
-  `status: "draft"`, `connector_status: "not_connected"`, and `published: false`.
+  an approval state, `connector_status: "not_connected"`, and `published: false`.
 - `tool_calls`: actual agent/tool names and completion status, without model reasoning.
 - `provider`: `bedrock` or `gemini`, whichever completed the workflow.
 - `model_id`: actual model used, not just the configured primary.
@@ -88,6 +99,24 @@ The CEO answers ordinary questions directly with empty preview and call lists.
 `GET /health` checks the API only and reports configured provider preference.
 It does not test keys, AWS credentials, model access or quota. `/` and `/favicon.ico`
 are not defined, so their 404 responses are expected.
+
+## Human review workflow
+
+In `/docs`, select **Authorize** and enter `Bearer <your owner token>`. A completed
+campaign's drafts enter `pending_review` only when deterministic QA has no blocking
+issues. Each approval is bound to the displayed draft version and content hash.
+Human edits create a new immutable version and void any older approval.
+
+Use `POST /drafts/{draft_id}/request-changes` with a comment, then
+`POST /drafts/{draft_id}/revise` to let the Writer revise that draft. The Guardian
+checks each saved revision; code caps agent revisions at two. To edit text yourself,
+use `PATCH /drafts/{draft_id}`. Approve or reject with the exact current `version`
+and `content_hash` via `/approve` or `/reject`. Review history is available at
+`GET /audit?tenant_id=local`; `GET /drafts/{draft_id}` shows approval requests and
+all saved versions.
+
+Approval does not publish. Scheduling and publishing endpoints, OAuth, and social
+connectors are not implemented in this phase.
 
 ## How AWS fallback works
 

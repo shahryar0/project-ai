@@ -45,6 +45,7 @@ class Draft(Base):
     platform: Mapped[str] = mapped_column(String(20))
     current_version: Mapped[int] = mapped_column(Integer, default=0)
     state: Mapped[str] = mapped_column(String(20), default="draft")
+    revision_rounds: Mapped[int] = mapped_column(Integer, default=0)
     created_by_agent: Mapped[str] = mapped_column(String(80), default="content_writer")
     created_at: Mapped[str] = mapped_column(String(40), default=now)
 
@@ -61,3 +62,29 @@ class DraftVersion(Base):
     qa_issues: Mapped[list] = mapped_column(JSON)
     created_by: Mapped[str] = mapped_column(String(80))
     created_at: Mapped[str] = mapped_column(String(40), default=now)
+
+
+class ApprovalRequest(Base):
+    __tablename__ = "approval_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    draft_id: Mapped[str] = mapped_column(ForeignKey("drafts.id", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending_review")
+    decided_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    decided_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(String(40), default=now)
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    actor_type: Mapped[str] = mapped_column(String(20))
+    actor_id: Mapped[str] = mapped_column(String(120))
+    action: Mapped[str] = mapped_column(String(50))
+    entity: Mapped[str] = mapped_column(String(40))
+    entity_id: Mapped[str] = mapped_column(String(36))
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    at: Mapped[str] = mapped_column(String(40), default=now)

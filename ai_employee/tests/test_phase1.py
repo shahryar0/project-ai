@@ -320,12 +320,15 @@ def test_failed_run_is_cleaned_and_can_retry_same_id(gemini):
     assert response.previews[0].version == 1
 
 
-def test_phase_one_has_no_approval_or_publishing_routes():
+def test_phase_two_adds_manual_review_routes_without_publishing():
     from app.api.main import app
     paths = app.openapi()["paths"]
     assert "/campaigns/{campaign_id}" in paths
     assert "/drafts/{draft_id}" in paths
-    assert not any(any(action in path for action in ("approve", "schedule", "publish", "reject")) for path in paths)
+    assert "/drafts/{draft_id}/approve" in paths
+    assert "/drafts/{draft_id}/reject" in paths
+    assert "/drafts/{draft_id}/schedule" not in paths
+    assert not any("publish" in path or "connectors" in path for path in paths)
 
 
 def test_storage_configuration_failure_is_sanitized(gemini, monkeypatch):

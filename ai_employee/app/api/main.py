@@ -1,6 +1,7 @@
 """FastAPI service for the CEO-led social post preview workflow."""
 
 import httpx
+import re
 from typing import Literal
 from fastapi import FastAPI, HTTPException
 from google.genai.errors import APIError
@@ -23,6 +24,7 @@ from app.context import WorkflowContext
 from app.runner import EmptyModelResponseError, ModelFallbackError, run_workflow
 from app.schemas import BrandProfile, Platform, PostPreview, ProviderAttempt, ToolCallRecord
 from app.api.campaigns import router as campaign_router
+from app.api.approval import router as approval_router
 from app.storage.errors import CampaignConflictError, StorageUnavailableError
 
 app = FastAPI(
@@ -30,6 +32,7 @@ app = FastAPI(
     description="CEO -> social media manager -> content writer -> local platform preview tools. No posts are published.",
 )
 app.include_router(campaign_router)
+app.include_router(approval_router)
 
 
 class ChatRequest(BaseModel):
@@ -65,10 +68,20 @@ class ChatResponse(BaseModel):
     run_id: str
     tenant_id: str
     replayed: bool = False
+    guardian_verdicts: list[dict] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):
     detail: str
+
+
+def sanitize_unverified_status(answer: str) -> str:
+    """Do not relay a model's unsupported claim that an external action occurred."""
+    for claim in re.finditer(r"\b(?:posted|published|scheduled|approved)\b", answer, re.IGNORECASE):
+        context = answer[max(0, claim.start() - 32):claim.start()].lower()
+        if not re.search(r"\b(?:not|never|no|isn't|aren't|cannot|can't|won't|without)\b", context):
+            return "I can prepare drafts for human review. No post has been published or scheduled, and no approval was recorded."
+    return answer
 
 
 @app.get("/health")
@@ -142,6 +155,8 @@ def chat(body: ChatRequest) -> ChatResponse:
     payload = run.payload
     previews = [PostPreview.model_validate(preview) for preview in payload["previews"]]
     answer = format_previews(previews) if previews else payload["summary"]
+    if not previews:
+        answer = sanitize_unverified_status(answer)
     if payload["tool_calls"] and not previews:
         answer += "\n\nNo platform previews were produced. Nothing was published."
     if not answer:
@@ -151,4 +166,5 @@ def chat(body: ChatRequest) -> ChatResponse:
         fallback_used=run.fallback_used, provider_attempts=run.attempts, previews=previews,
         tool_calls=[ToolCallRecord.model_validate(call) for call in payload["tool_calls"]],
         campaign_id=run.campaign_id, run_id=run.brief.run_id, tenant_id=run.brief.tenant_id, replayed=run.replayed,
+        guardian_verdicts=payload.get("guardian_verdicts", []),
     )

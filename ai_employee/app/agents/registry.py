@@ -10,6 +10,7 @@ from app.context import WorkflowContext, brief_with_context
 from app import config
 from app.briefs import handoff_error
 from app.schemas import CampaignBrief
+from app.tools.status import get_campaign_status
 
 
 def build_hierarchy(provider: config.ModelProvider = "bedrock"):
@@ -28,4 +29,4 @@ def build_hierarchy(provider: config.ModelProvider = "bedrock"):
         payload = collect_result(result, "social_media_manager")
         return json.dumps(payload, ensure_ascii=False), payload
 
-    return build_ceo([social_media_manager], provider=provider)
+    return build_ceo([social_media_manager, get_campaign_status], provider=provider)

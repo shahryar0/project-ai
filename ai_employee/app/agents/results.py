@@ -9,6 +9,7 @@ def collect_result(result: dict, agent: str) -> dict:
     outputs = {message.tool_call_id: message for message in messages if isinstance(message, ToolMessage)}
     previews: dict[str, dict] = {}
     calls = []
+    guardian_verdicts = []
     for message in messages:
         if isinstance(message, AIMessage):
             for call in message.tool_calls:
@@ -18,17 +19,23 @@ def collect_result(result: dict, agent: str) -> dict:
                     status = "error" if isinstance(output.artifact, dict) and output.artifact.get("error") else "completed"
                 calls.append(ToolCallRecord(agent=agent, tool=call["name"], status=status).model_dump())
         if isinstance(message, ToolMessage) and isinstance(message.artifact, dict):
+            if "guardian_verdict" in message.artifact:
+                guardian_verdicts.append(message.artifact["guardian_verdict"])
+            guardian_verdicts.extend(message.artifact.get("guardian_verdicts", []))
             for preview in message.artifact.get("previews", []):
                 validated = PostPreview.model_validate(preview)
                 previous = previews.get(validated.platform)
                 if previous is None or validated.version >= previous["version"]:
                     previews[validated.platform] = validated.model_dump()
             calls.extend(message.artifact.get("tool_calls", []))
-    return {
+    result = {
         "summary": messages[-1].text.strip(),
         "previews": [previews[platform] for platform in PLATFORMS if platform in previews],
         "tool_calls": calls,
     }
+    if guardian_verdicts:
+        result["guardian_verdicts"] = guardian_verdicts
+    return result
 
 
 def format_previews(previews: list[PostPreview]) -> str:

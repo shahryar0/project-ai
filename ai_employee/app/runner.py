@@ -18,6 +18,7 @@ from app.context import WorkflowContext, brief_with_context
 from app.graph import get_graph
 from app.llm import BedrockInitializationError
 from app.schemas import CampaignBrief, ProviderAttempt
+from app.schemas import PLATFORMS
 from app.briefs import build_brief
 from app.storage.factory import get_repository
 
@@ -139,6 +140,14 @@ def run_workflow(query: str, context: WorkflowContext, *, run_id=None, tenant_id
         payload = collect_result(result, "ceo")
         actual_model = config.model_id(provider)
         repository.complete_campaign(tenant_id, campaign_id, {
+            "payload": payload, "provider": provider, "model_id": actual_model,
+            "fallback_used": fallback_used, "attempts": [attempt.model_dump() for attempt in attempts],
+        })
+        # Return authoritative state after control-plane review requests were created.
+        persisted = repository.get_campaign(tenant_id, campaign_id)
+        by_platform = {draft["platform"]: draft["current"] for draft in persisted["drafts"]}
+        payload["previews"] = [by_platform[platform] for platform in PLATFORMS if platform in by_platform]
+        repository.update_completed_result(tenant_id, campaign_id, {
             "payload": payload, "provider": provider, "model_id": actual_model,
             "fallback_used": fallback_used, "attempts": [attempt.model_dump() for attempt in attempts],
         })

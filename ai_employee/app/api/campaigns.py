@@ -1,10 +1,12 @@
 """Phase 1 read-only endpoints. Human approval/auth are a later phase."""
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi import Depends
 from sqlalchemy.exc import SQLAlchemyError
 from app.storage.errors import RecordNotFoundError, StorageUnavailableError
 from app.storage.factory import get_repository
 from app.storage.views import CampaignView, DraftView
+from app.security.roles import Actor, authenticate, require_tenant
 
 router = APIRouter(tags=["Saved campaigns and drafts"])
 
@@ -20,10 +22,14 @@ def read_record(kind, record_id, tenant_id):
 
 
 @router.get("/campaigns/{campaign_id}", response_model=CampaignView)
-def get_campaign(campaign_id: str, tenant_id: str = Query(default="local", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")):
+def get_campaign(campaign_id: str, tenant_id: str = Query(default="local", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"), actor: Actor = Depends(authenticate)):
+    if isinstance(actor, Actor):
+        require_tenant(actor, tenant_id)
     return read_record("campaign", campaign_id, tenant_id)
 
 
 @router.get("/drafts/{draft_id}", response_model=DraftView)
-def get_draft(draft_id: str, tenant_id: str = Query(default="local", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")):
+def get_draft(draft_id: str, tenant_id: str = Query(default="local", pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"), actor: Actor = Depends(authenticate)):
+    if isinstance(actor, Actor):
+        require_tenant(actor, tenant_id)
     return read_record("draft", draft_id, tenant_id)
