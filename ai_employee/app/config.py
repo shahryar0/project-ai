@@ -14,6 +14,9 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-1").strip()
 BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0").strip()
 AWS_BEARER_TOKEN_BEDROCK = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip()
 AWS_PROFILE = os.getenv("AWS_PROFILE", "").strip()
+DATABASE_URL = os.getenv(
+    "DATABASE_URL", "sqlite:///" + (Path(__file__).resolve().parents[1] / "data" / "ai_employee.db").as_posix()
+).strip()
 
 
 class ConfigurationError(ValueError):

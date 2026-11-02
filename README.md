@@ -1,5 +1,7 @@
 # project-ai
 
+**V2 Phase 1 is now implemented:** saved draft versions, typed briefs, code-owned platform selection and QA. See the [Phase 1 report](ai_employee/PHASE1_REPORT.md) for the current contract and how to test persistence. Later phases are not active.
+
 - `ai_employee/`: FastAPI and LangGraph agents, using **AWS Bedrock first** and **Gemini fallback**.
 - `cognitive/`: Next.js frontend scaffold, to connect in a later step.
 
@@ -68,9 +70,9 @@ Try it out**, and execute:
 }
 ```
 
-`brand` and `platforms` are optional. Agents follow platforms named in the query,
+`brand` and `platforms` are optional. Code resolves platforms named in the query,
 or all four when none are named. An explicit platform list is enforced by tools.
-Each request is independent; supply the brand and full revision brief again.
+Each model run is independent; drafts are persisted. Supply the brand and full brief for each new campaign.
 For the simple model check, send `{"query":"What is the capital of France?"}`.
 
 The response contains `answer`, structured `previews`, and actual `tool_calls`.

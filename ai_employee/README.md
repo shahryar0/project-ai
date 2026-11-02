@@ -1,5 +1,7 @@
 # AI Employee: AWS first, Gemini fallback
 
+**V2 Phase 1 is now implemented:** saved draft versions, typed briefs, code-owned platform selection and QA. See the [Phase 1 report](PHASE1_REPORT.md) for the current contract and how to test persistence. Later phases are not active.
+
 FastAPI invokes a LangGraph hierarchy with separate system prompts and personalities:
 
 ```text
@@ -103,7 +105,7 @@ Partial AWS messages/previews are discarded. The Gemini graph is created lazily.
 If Gemini also fails, the HTTP error reports both providers safely. Request validation
 and graph step limits are reported directly rather than triggering provider fallback.
 
-Each request is independent, with brand/preferences passed through per-run context.
+Each model run is independent, with brand/preferences passed through an authoritative CampaignBrief. Draft history is persisted.
 CEO short-term memory and durable history are not enabled. Graphs are cached per
 provider, but request messages and drafts are not shared. The CEO output cap is 1024,
 the manager 1536, and the writer 4096 tokens. Gemini has a 30-second timeout and one
@@ -115,7 +117,7 @@ must be a separate delivery step before social connectors are enabled.
 ## Content behavior
 
 `brand` and `platforms` are optional. An explicit platform list is enforced by the
-tools. Without it, agents follow the platforms named in the brief, defaulting to all
+tools. Without it, code resolves platform keywords in the original query, defaulting to all
 four when none are named. Twitter means X. Send the full brief and brand on each request.
 
 Facebook uses a community voice, Instagram a visual caption, X a concise message,

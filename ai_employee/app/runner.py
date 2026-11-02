@@ -1,6 +1,6 @@
 """Try the complete workflow on AWS, then start a clean Gemini run on provider failure."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 import httpx
@@ -17,7 +17,9 @@ from app.agents.results import collect_result
 from app.context import WorkflowContext, brief_with_context
 from app.graph import get_graph
 from app.llm import BedrockInitializationError
-from app.schemas import ProviderAttempt
+from app.schemas import CampaignBrief, ProviderAttempt
+from app.briefs import build_brief
+from app.storage.factory import get_repository
 
 
 class EmptyModelResponseError(RuntimeError):
@@ -83,6 +85,10 @@ class WorkflowRun:
     model_id: str
     fallback_used: bool
     attempts: list[ProviderAttempt]
+    campaign_id: str
+    brief: CampaignBrief
+    payload: dict
+    replayed: bool = False
 
 
 def _invoke(provider: config.ModelProvider, query: str, context: WorkflowContext) -> dict:
@@ -96,26 +102,48 @@ def _invoke(provider: config.ModelProvider, query: str, context: WorkflowContext
     return result
 
 
-def run_workflow(query: str, context: WorkflowContext) -> WorkflowRun:
-    provider = config.MODEL_PROVIDER
-    if provider not in ("bedrock", "gemini"):
-        raise config.ConfigurationError("MODEL_PROVIDER must be bedrock or gemini.")
-    if provider == "gemini":
+def _run_providers(query: str, context: WorkflowContext):
+    if config.MODEL_PROVIDER == "gemini":
         result = _invoke("gemini", query, context)
-        return WorkflowRun(result, "gemini", config.GEMINI_MODEL, False, [
-            ProviderAttempt(provider="gemini", status="success"),
-        ])
+        return result, "gemini", False, [ProviderAttempt(provider="gemini", status="success")]
     try:
         result = _invoke("bedrock", query, context)
     except PROVIDER_ERRORS as primary_error:
+        # Delete every version written by the failed attempt before starting Gemini.
+        context.repository.discard_attempt(context.brief.tenant_id, context.campaign_id)
         try:
             result = _invoke("gemini", query, context)
         except (*PROVIDER_ERRORS, ValueError) as fallback_error:
             raise ModelFallbackError(primary_error, fallback_error) from fallback_error
-        return WorkflowRun(result, "gemini", config.GEMINI_MODEL, True, [
+        return result, "gemini", True, [
             ProviderAttempt(provider="bedrock", status="failed", reason=failure_reason(primary_error)),
             ProviderAttempt(provider="gemini", status="success"),
-        ])
-    return WorkflowRun(result, "bedrock", config.BEDROCK_MODEL_ID, False, [
-        ProviderAttempt(provider="bedrock", status="success"),
-    ])
+        ]
+    return result, "bedrock", False, [ProviderAttempt(provider="bedrock", status="success")]
+
+
+def run_workflow(query: str, context: WorkflowContext, *, run_id=None, tenant_id="local", topic=None, facts=None, call_to_action=None) -> WorkflowRun:
+    if config.MODEL_PROVIDER not in ("bedrock", "gemini"):
+        raise config.ConfigurationError("MODEL_PROVIDER must be bedrock or gemini.")
+    brief = build_brief(query, context, run_id=run_id, tenant_id=tenant_id, topic=topic, facts=facts, call_to_action=call_to_action)
+    repository = get_repository()
+    campaign_id, cached = repository.claim_campaign(brief)
+    if cached is not None:
+        return WorkflowRun({}, cached["provider"], cached["model_id"], cached["fallback_used"],
+            [ProviderAttempt.model_validate(attempt) for attempt in cached["attempts"]],
+            campaign_id, brief, cached["payload"], True)
+    context = replace(context, brand=brief.brand, platforms=tuple(brief.platforms),
+        brief=brief, campaign_id=campaign_id, repository=repository)
+    try:
+        result, provider, fallback_used, attempts = _run_providers(query, context)
+        payload = collect_result(result, "ceo")
+        actual_model = config.model_id(provider)
+        repository.complete_campaign(tenant_id, campaign_id, {
+            "payload": payload, "provider": provider, "model_id": actual_model,
+            "fallback_used": fallback_used, "attempts": [attempt.model_dump() for attempt in attempts],
+        })
+    except Exception as error:
+        # No partial drafts survive a failed request, including a failed fallback.
+        repository.fail_campaign(tenant_id, campaign_id, type(error).__name__)
+        raise
+    return WorkflowRun(result, provider, actual_model, fallback_used, attempts, campaign_id, brief, payload)

@@ -20,7 +20,9 @@ def collect_result(result: dict, agent: str) -> dict:
         if isinstance(message, ToolMessage) and isinstance(message.artifact, dict):
             for preview in message.artifact.get("previews", []):
                 validated = PostPreview.model_validate(preview)
-                previews[validated.platform] = validated.model_dump()
+                previous = previews.get(validated.platform)
+                if previous is None or validated.version >= previous["version"]:
+                    previews[validated.platform] = validated.model_dump()
             calls.extend(message.artifact.get("tool_calls", []))
     return {
         "summary": messages[-1].text.strip(),
@@ -35,6 +37,7 @@ def format_previews(previews: list[PostPreview]) -> str:
         sections.append(f"{post.platform.upper()}\n{post.text}")
         if post.media_suggestion:
             sections.append(f"Suggested visual: {post.media_suggestion}")
-        sections.extend(f"Note: {warning}" for warning in post.warnings)
+        sections.append(f"Saved draft: {post.draft_id}, version {post.version}")
+        sections.extend(f"{issue.severity.upper()} [{issue.code}]: {issue.message}" for issue in post.qa_issues)
     sections.append("Preview only. Nothing was published; social connectors are not connected.")
     return "\n\n".join(sections)

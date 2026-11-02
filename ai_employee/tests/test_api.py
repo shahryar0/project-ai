@@ -1,6 +1,7 @@
 """Check API handlers -> LangGraph -> Gemini with the SDK request mocked."""
 
 from unittest.mock import Mock
+import json
 
 import httpx
 import pytest
@@ -12,10 +13,27 @@ from app import config
 from app.api.main import ChatRequest, app, chat, health
 from app.graph import get_graph
 from app.llm import get_llm
+from app.storage.factory import get_repository
+
+
+class CampaignSDKMock(Mock):
+    """Script model output while copying canonical briefs for ordinary handoffs."""
+    def __call__(self, *args, **kwargs):
+        response = super().__call__(*args, **kwargs).model_copy(deep=True)
+        text = kwargs["contents"][0].parts[0].text
+        canonical = json.JSONDecoder().raw_decode(text.split("Campaign brief (authoritative JSON):\n", 1)[1])[0]
+        for candidate in response.candidates or []:
+            for part in candidate.content.parts or []:
+                call = part.function_call
+                if call and call.name in ("social_media_manager", "content_writer") and isinstance(call.args.get("brief"), str):
+                    call.args["brief"] = canonical
+        return response
 
 
 @pytest.fixture
-def gemini(monkeypatch):
+def gemini(monkeypatch, tmp_path):
+    get_repository.cache_clear()
+    monkeypatch.setattr(config, "DATABASE_URL", "sqlite:///" + (tmp_path / "drafts.db").as_posix())
     monkeypatch.setattr(config, "MODEL_PROVIDER", "gemini")
     monkeypatch.setattr(config, "GOOGLE_API_KEY", "unit-test-key")
     monkeypatch.setattr(config, "GEMINI_MODEL", "gemini-3.5-flash-lite")
@@ -29,13 +47,16 @@ def gemini(monkeypatch):
             prompt_token_count=10, candidates_token_count=2, total_token_count=12,
         ),
     )
-    generate = Mock(return_value=response)
+    generate = CampaignSDKMock(return_value=response)
     monkeypatch.setattr(models.Models, "generate_content", generate)
     get_graph.cache_clear()
     try:
         yield generate
     finally:
         get_graph.cache_clear()
+        if get_repository.cache_info().currsize:
+            get_repository().close()
+        get_repository.cache_clear()
 
 
 def test_question_reaches_gemini_adapter(gemini):
@@ -48,7 +69,7 @@ def test_question_reaches_gemini_adapter(gemini):
     request = gemini.call_args.kwargs
     assert request["model"] == config.GEMINI_MODEL
     assert request["contents"][0].role == "user"
-    assert request["contents"][0].parts[0].text == "What is the capital of France?"
+    assert "What is the capital of France?" in request["contents"][0].parts[0].text
     assert request["config"].max_output_tokens == 1024
     assert request["config"].system_instruction
 
@@ -227,11 +248,12 @@ def test_brand_and_previews_do_not_leak_to_next_request(gemini):
     assert "Private Test Brand" not in gemini.call_args.kwargs["contents"][0].parts[0].text
 
 
-def test_preview_flags_and_editorial_warning():
-    from app.tools.preview import render_preview
+def test_preview_flags_and_editorial_warning(gemini):
     from app.schemas import PostPreview
-    _, artifact = render_preview("x", "a" * 261, "Visual idea", None)
-    preview = PostPreview.model_validate(artifact["previews"][0])
+    script = social_script(["x"])
+    script[2].candidates[0].content.parts[0].function_call.args["text"] = "a" * 261
+    gemini.side_effect = script
+    preview = chat(ChatRequest(query="Draft for X.", platforms=["x"])).previews[0]
     assert preview.character_count == 261
     assert preview.warnings
     assert preview.published is False
@@ -283,7 +305,7 @@ def test_bedrock_success_does_not_require_or_call_gemini(bedrock, gemini, monkey
     stubber, factory = bedrock
     stubber.add_response("converse", aws_reply(), {
         "modelId": config.BEDROCK_MODEL_ID,
-        "messages": [{"role": "user", "content": [{"text": "What is the capital of France?"}]}],
+        "messages": ANY,
         "system": ANY, "toolConfig": ANY,
         "inferenceConfig": {"maxTokens": 1024, "temperature": 0.3},
     })
@@ -366,13 +388,17 @@ def test_both_providers_exhausted_report_both_failures(bedrock, gemini):
 
 
 def test_nested_aws_failure_restarts_the_whole_hierarchy_on_gemini(bedrock, gemini):
+    from app.briefs import build_brief
+    from app.context import WorkflowContext
+    body = ChatRequest(query="Original campaign brief.", brand={"name": "Focus Studio"}, run_id="nested-fallback")
+    brief = build_brief(body.query, WorkflowContext(brand=body.brand), run_id=body.run_id)
     stubber, _ = bedrock
     stubber.add_response("converse", aws_reply(tool_use={
-        "toolUseId": "delegate-manager", "name": "social_media_manager", "input": {"brief": "Draft campaign."},
+        "toolUseId": "delegate-manager", "name": "social_media_manager", "input": {"brief": brief.model_dump()},
     }))
     stubber.add_client_error("converse", service_error_code="ThrottlingException", http_status_code=429)
     gemini.side_effect = social_script(["facebook", "instagram", "x", "linkedin"])
-    response = chat(ChatRequest(query="Original campaign brief.", brand={"name": "Focus Studio"}))
+    response = chat(body)
     assert response.fallback_used is True
     assert response.provider == "gemini"
     assert len(response.previews) == 4

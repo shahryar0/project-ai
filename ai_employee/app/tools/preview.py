@@ -1,26 +1,26 @@
-"""Pure local rendering; no platform API or publishing capability."""
+"""Save local draft versions and return their authoritative artifacts; never publish."""
 
 import json
 from app.context import WorkflowContext
+from app.qa.engine import check_draft, normalize_text
 from app.schemas import Platform, PostPreview
-
-EDITORIAL_BUDGETS = {"facebook": 1200, "instagram": 1800, "x": 260, "linkedin": 2000}
 
 
 def render_preview(platform: Platform, text: str, media_suggestion: str, context: WorkflowContext | None) -> tuple[str, dict]:
-    if context and context.platforms and platform not in context.platforms:
-        error = f"{platform} was not requested. Use only: {', '.join(context.platforms)}."
+    if context is None or context.brief is None or context.repository is None or context.campaign_id is None:
+        error = "A current persisted campaign context is required. No draft was saved."
         return json.dumps({"error": error}), {"error": error, "previews": []}
-    text = text.strip()
+    if platform not in context.brief.platforms:
+        error = f"{platform} was not requested. Use only: {', '.join(context.brief.platforms)}."
+        return json.dumps({"error": error}), {"error": error, "previews": []}
+    text = normalize_text(text)
+    issues = check_draft(platform, text, media_suggestion, context.brief)
     if not text:
         error = "Post text is empty. Write a complete draft and call the preview tool again."
-        return json.dumps({"error": error}), {"error": error, "previews": []}
-    warnings = []
-    budget = EDITORIAL_BUDGETS[platform]
-    if len(text) > budget:
-        warnings.append(f"Draft exceeds the internal {budget}-character editorial budget. Shorten it before use.")
-    preview = PostPreview(
-        platform=platform, text=text, media_suggestion=media_suggestion.strip(),
-        character_count=len(text), warnings=warnings,
-    ).model_dump()
+        return json.dumps({"error": error}), {"error": error, "previews": [], "qa_issues": [issue.model_dump() for issue in issues]}
+    saved = context.repository.save_draft(
+        context.brief.tenant_id, context.campaign_id, platform, text,
+        media_suggestion.strip(), [issue.model_dump() for issue in issues],
+    )
+    preview = PostPreview.model_validate(saved).model_dump()
     return json.dumps(preview, ensure_ascii=False), {"previews": [preview]}
