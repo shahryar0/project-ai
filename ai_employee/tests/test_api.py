@@ -16,6 +16,7 @@ from app.llm import get_llm
 
 @pytest.fixture
 def gemini(monkeypatch):
+    monkeypatch.setattr(config, "MODEL_PROVIDER", "gemini")
     monkeypatch.setattr(config, "GOOGLE_API_KEY", "unit-test-key")
     monkeypatch.setattr(config, "GEMINI_MODEL", "gemini-3.5-flash-lite")
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
@@ -69,7 +70,10 @@ def test_invalid_question_does_not_create_model(gemini, payload):
 
 def test_health_does_not_initialize_model(gemini, monkeypatch):
     monkeypatch.setattr(config, "GOOGLE_API_KEY", "")
-    assert health() == {"status": "ok", "model_id": config.GEMINI_MODEL}
+    assert health() == {
+        "status": "ok", "model_id": config.GEMINI_MODEL,
+        "primary_provider": "gemini", "fallback_provider": "",
+    }
     assert get_graph.cache_info().currsize == 0
     gemini.assert_not_called()
 
@@ -239,3 +243,142 @@ def test_preview_flags_and_editorial_warning():
 def test_invalid_platform_preferences(platforms):
     with pytest.raises(ValidationError):
         ChatRequest(query="Draft a post", platforms=platforms)
+
+
+@pytest.fixture
+def bedrock(gemini, monkeypatch):
+    import boto3
+    from botocore.stub import Stubber
+    from langchain_aws import ChatBedrockConverse
+    from app import llm
+
+    monkeypatch.setattr(config, "MODEL_PROVIDER", "bedrock")
+    monkeypatch.setattr(config, "AWS_REGION", "us-east-1")
+    monkeypatch.setattr(config, "BEDROCK_MODEL_ID", "amazon.nova-micro-v1:0")
+    monkeypatch.setattr(config, "AWS_BEARER_TOKEN_BEDROCK", "")
+    monkeypatch.setattr(config, "AWS_PROFILE", "")
+    client_args = {"region_name": "us-east-1", "aws_access_key_id": "test", "aws_secret_access_key": "test"}
+    runtime = boto3.client("bedrock-runtime", **client_args)
+    control = boto3.client("bedrock", **client_args)
+    factory = Mock(side_effect=lambda **kwargs: ChatBedrockConverse(client=runtime, bedrock_client=control, **kwargs))
+    monkeypatch.setattr(llm, "ChatBedrockConverse", factory)
+    with Stubber(runtime) as stubber, Stubber(control):
+        yield stubber, factory
+        stubber.assert_no_pending_responses()
+
+
+def aws_reply(text="Paris.", tool_use=None):
+    content = [{"toolUse": tool_use}] if tool_use else [{"text": text}]
+    return {
+        "output": {"message": {"role": "assistant", "content": content}},
+        "stopReason": "tool_use" if tool_use else "end_turn",
+        "usage": {"inputTokens": 10, "outputTokens": 2, "totalTokens": 12},
+        "metrics": {"latencyMs": 1},
+    }
+
+
+def test_bedrock_success_does_not_require_or_call_gemini(bedrock, gemini, monkeypatch):
+    from botocore.stub import ANY
+    monkeypatch.setattr(config, "GOOGLE_API_KEY", "")
+    stubber, factory = bedrock
+    stubber.add_response("converse", aws_reply(), {
+        "modelId": config.BEDROCK_MODEL_ID,
+        "messages": [{"role": "user", "content": [{"text": "What is the capital of France?"}]}],
+        "system": ANY, "toolConfig": ANY,
+        "inferenceConfig": {"maxTokens": 1024, "temperature": 0.3},
+    })
+    response = chat(ChatRequest(query="What is the capital of France?"))
+    assert response.answer == "Paris."
+    assert response.provider == "bedrock"
+    assert response.model_id == config.BEDROCK_MODEL_ID
+    assert response.fallback_used is False
+    assert [(attempt.provider, attempt.status) for attempt in response.provider_attempts] == [("bedrock", "success")]
+    gemini.assert_not_called()
+    sdk_config = factory.call_args.kwargs["config"]
+    assert sdk_config.retries == {"mode": "adaptive", "total_max_attempts": 2}
+    assert sdk_config.connect_timeout == 10
+
+
+@pytest.mark.parametrize("code,status,message", [
+    ("ThrottlingException", 429, "Too many tokens per day, please wait before trying again."),
+    ("ThrottlingException", 429, "Too many requests"),
+    ("AccessDeniedException", 403, "Access denied unit-test-key"),
+    ("ExpiredTokenException", 403, "Bearer token expired"),
+    ("InternalServerException", 500, "Service temporarily unavailable"),
+])
+def test_aws_provider_failure_falls_back_to_gemini(bedrock, gemini, code, status, message):
+    stubber, _ = bedrock
+    stubber.add_client_error("converse", service_error_code=code, service_message=message, http_status_code=status)
+    response = chat(ChatRequest(query="What is the capital of France?"))
+    assert response.answer == "Paris."
+    assert response.provider == "gemini"
+    assert response.model_id == config.GEMINI_MODEL
+    assert response.fallback_used is True
+    assert [(attempt.provider, attempt.status) for attempt in response.provider_attempts] == [("bedrock", "failed"), ("gemini", "success")]
+    assert code in response.provider_attempts[0].reason
+    assert "unit-test-key" not in response.model_dump_json()
+    gemini.assert_called_once()
+
+
+def test_bearer_token_is_used_instead_of_explicit_profile(bedrock, monkeypatch):
+    from app.llm import get_llm
+    _, factory = bedrock
+    monkeypatch.setattr(config, "AWS_BEARER_TOKEN_BEDROCK", "test-bearer-token")
+    monkeypatch.setattr(config, "AWS_PROFILE", "unused-profile")
+    get_llm(provider="bedrock")
+    assert factory.call_args.kwargs["bedrock_api_key"] == "test-bearer-token"
+    assert factory.call_args.kwargs["credentials_profile_name"] is None
+
+
+def test_aws_initialization_failure_falls_back(bedrock, gemini):
+    _, factory = bedrock
+    factory.side_effect = ValueError("Private credentials: unit-test-key")
+    response = chat(ChatRequest(query="Hello"))
+    assert response.fallback_used is True
+    assert response.provider == "gemini"
+    assert "initialization failed" in response.provider_attempts[0].reason
+    assert "unit-test-key" not in response.model_dump_json()
+    gemini.assert_called_once()
+
+
+def test_no_gemini_key_after_aws_failure_returns_setup_error(bedrock, gemini, monkeypatch):
+    monkeypatch.setattr(config, "GOOGLE_API_KEY", "")
+    stubber, _ = bedrock
+    stubber.add_client_error("converse", service_error_code="ThrottlingException", http_status_code=429)
+    with pytest.raises(HTTPException) as error:
+        chat(ChatRequest(query="Hello"))
+    assert error.value.status_code == 503
+    assert "Bedrock failed" in error.value.detail
+    assert "Set GOOGLE_API_KEY" in error.value.detail
+    gemini.assert_not_called()
+
+
+def test_both_providers_exhausted_report_both_failures(bedrock, gemini):
+    stubber, _ = bedrock
+    stubber.add_client_error("converse", service_error_code="ThrottlingException", http_status_code=429)
+    gemini.side_effect = errors.ClientError(429, {"error": {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "unit-test-key"}})
+    with pytest.raises(HTTPException) as error:
+        chat(ChatRequest(query="Hello"))
+    assert error.value.status_code == 429
+    assert "Bedrock failed" in error.value.detail
+    assert "Gemini fallback failed" in error.value.detail
+    assert "unit-test-key" not in error.value.detail
+
+
+def test_nested_aws_failure_restarts_the_whole_hierarchy_on_gemini(bedrock, gemini):
+    stubber, _ = bedrock
+    stubber.add_response("converse", aws_reply(tool_use={
+        "toolUseId": "delegate-manager", "name": "social_media_manager", "input": {"brief": "Draft campaign."},
+    }))
+    stubber.add_client_error("converse", service_error_code="ThrottlingException", http_status_code=429)
+    gemini.side_effect = social_script(["facebook", "instagram", "x", "linkedin"])
+    response = chat(ChatRequest(query="Original campaign brief.", brand={"name": "Focus Studio"}))
+    assert response.fallback_used is True
+    assert response.provider == "gemini"
+    assert len(response.previews) == 4
+    assert len(response.tool_calls) == 6
+    assert all(not preview.published for preview in response.previews)
+    first_gemini_input = gemini.call_args_list[0].kwargs["contents"]
+    assert len(first_gemini_input) == 1
+    assert "Original campaign brief" in first_gemini_input[0].parts[0].text
+    assert "Focus Studio" in first_gemini_input[0].parts[0].text

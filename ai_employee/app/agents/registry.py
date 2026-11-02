@@ -7,10 +7,11 @@ from app.agents.results import collect_result
 from app.agents.social.content_writer import build_content_writer
 from app.agents.social.manager import build_social_manager
 from app.context import WorkflowContext, brief_with_context
+from app import config
 
 
-def build_hierarchy():
-    manager = build_social_manager(build_content_writer())
+def build_hierarchy(provider: config.ModelProvider = "bedrock"):
+    manager = build_social_manager(build_content_writer(provider), provider)
 
     @tool(response_format="content_and_artifact")
     def social_media_manager(brief: str, runtime: ToolRuntime[WorkflowContext]) -> tuple[str, dict]:
@@ -22,4 +23,4 @@ def build_hierarchy():
         payload = collect_result(result, "social_media_manager")
         return json.dumps(payload, ensure_ascii=False), payload
 
-    return build_ceo([social_media_manager])
+    return build_ceo([social_media_manager], provider=provider)

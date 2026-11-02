@@ -6,11 +6,12 @@ from app.tools.facebook import preview_facebook_post
 from app.tools.instagram import preview_instagram_post
 from app.tools.x import preview_x_post
 from app.tools.linkedin import preview_linkedin_post
+from app import config
 
 
-def build_content_writer():
+def build_content_writer(provider: config.ModelProvider = "bedrock"):
     return create_agent(
-        get_llm(max_tokens=4096), system_prompt=CONTENT_WRITER_PROMPT,
+        get_llm(max_tokens=4096, provider=provider), system_prompt=CONTENT_WRITER_PROMPT,
         tools=[preview_facebook_post, preview_instagram_post, preview_x_post, preview_linkedin_post],
         context_schema=WorkflowContext, name="content_writer",
     )

@@ -17,10 +17,10 @@ from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, ConfigDict, Field
 
 from app import config
-from app.graph import get_graph
 from app.agents.results import collect_result, format_previews
-from app.context import WorkflowContext, brief_with_context
-from app.schemas import BrandProfile, Platform, PostPreview, ToolCallRecord
+from app.context import WorkflowContext
+from app.runner import EmptyModelResponseError, ModelFallbackError, run_workflow
+from app.schemas import BrandProfile, Platform, PostPreview, ProviderAttempt, ToolCallRecord
 
 app = FastAPI(
     title="AI Employee - Social Post Previews",
@@ -42,6 +42,9 @@ class ChatResponse(BaseModel):
     previews: list[PostPreview] = Field(default_factory=list)
     tool_calls: list[ToolCallRecord] = Field(default_factory=list)
     mode: Literal["preview"] = "preview"
+    provider: Literal["bedrock", "gemini"]
+    fallback_used: bool = False
+    provider_attempts: list[ProviderAttempt] = Field(default_factory=list)
 
 
 class ErrorResponse(BaseModel):
@@ -50,27 +53,33 @@ class ErrorResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    """Checks the API only; this does not verify the Gemini key or model."""
-    return {"status": "ok", "model_id": config.GEMINI_MODEL}
+    """Checks the API only; provider credentials and model access are not tested."""
+    return {
+        "status": "ok", "model_id": config.model_id(config.MODEL_PROVIDER),
+        "primary_provider": config.MODEL_PROVIDER,
+        "fallback_provider": "gemini" if config.MODEL_PROVIDER == "bedrock" else "",
+    }
 
 
 @app.post(
     "/chat",
     response_model=ChatResponse,
     responses={
-        429: {"model": ErrorResponse, "description": "Gemini quota or rate limit reached."},
-        502: {"model": ErrorResponse, "description": "Gemini rejected the request or returned no text."},
-        503: {"model": ErrorResponse, "description": "Gemini key, connection, or service unavailable."},
+        429: {"model": ErrorResponse, "description": "Model quota or rate limit reached after fallback."},
+        502: {"model": ErrorResponse, "description": "The model or workflow could not produce a response."},
+        503: {"model": ErrorResponse, "description": "Model credentials, connection, or service unavailable."},
     },
 )
 def chat(body: ChatRequest) -> ChatResponse:
-    """Use a sync route because the Gemini SDK call is blocking."""
+    """Run AWS first, with a fresh Gemini workflow if the AWS provider fails."""
     try:
         context = WorkflowContext(brand=body.brand, platforms=tuple(body.platforms) if body.platforms else None)
-        result = get_graph().invoke(
-            {"messages": [("user", brief_with_context(body.query, context))]},
-            context=context, config={"recursion_limit": 12},
-        )
+        run = run_workflow(body.query, context)
+        result = run.result
+    except ModelFallbackError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except EmptyModelResponseError as exc:
+        raise HTTPException(status_code=502, detail="The model returned no text or previews. Check generation limits or safety settings.") from exc
     except config.ConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ModelRateLimitError as exc:
@@ -113,6 +122,7 @@ def chat(body: ChatRequest) -> ChatResponse:
     if not answer:
         raise HTTPException(status_code=502, detail="Gemini returned no text. Check whether generation was blocked or reached its output limit.")
     return ChatResponse(
-        answer=answer, model_id=config.GEMINI_MODEL, previews=previews,
+        answer=answer, model_id=run.model_id, provider=run.provider,
+        fallback_used=run.fallback_used, provider_attempts=run.attempts, previews=previews,
         tool_calls=[ToolCallRecord.model_validate(call) for call in payload["tool_calls"]],
     )

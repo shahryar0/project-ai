@@ -31,3 +31,9 @@ class ToolCallRecord(BaseModel):
     agent: str
     tool: str
     status: Literal["completed", "error", "incomplete"]
+
+
+class ProviderAttempt(BaseModel):
+    provider: Literal["bedrock", "gemini"]
+    status: Literal["success", "failed"]
+    reason: str | None = None

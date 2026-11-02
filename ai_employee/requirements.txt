@@ -1,6 +1,8 @@
 # Direct dependency versions from the tested local setup.
 langgraph==1.2.19
 langchain==1.4.7
+langchain-aws==1.9.1
+boto3==1.43.123
 langchain-google-genai==4.4.2
 google-genai==2.34.0
 httpx==0.28.1
